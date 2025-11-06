@@ -17,7 +17,6 @@ Unreal Engine 5 boss rush game focusing on Monster Hunter-style combat with clos
 
 - [Systems Documentation](Docs/Systems/)
 - [Architecture Overview](Docs/Architecture/)
-- [Design Documents](Docs/Design/)
 
 ## Current Features
 

@@ -7,14 +7,8 @@ Quick reference for all implemented game systems.
 ## Combat System
 
 **Status:** ✅ Core Complete  
-**Blueprint:** BP_ThirdPersonCharacter  
-
-### Components
-
-- 4-attack combo (LMB+RMB)
-- Data-driven: DT_Attacks + DT_Combos
-- Enum-based state machine
-- Loop support (Attack 2a → Attack 1)
+**Blueprint:** BP_ThirdPersonCharacter
+**MainFunction:** AttemptCombo()
 
 ### Key Functions
 
@@ -23,17 +17,21 @@ Quick reference for all implemented game systems.
 - Queries data tables for valid transitions
 
 ### Data Structure
+
 **DT_Attacks:**
 
+- Row Name (str)
 - AttackName (Enum)
 - AttackMontage
 - BaseDamage
 - AttackType
-- HitboxDelay/Duration
+- HitboxDelay
+- HitboxDuration
 - CameraShakeScale
 
 **DT_Combos:**
 
+- Row Name
 - FromAttack (Enum)
 - ToAttack (Enum)
 - InputAction (Enum)
@@ -42,8 +40,7 @@ Quick reference for all implemented game systems.
 
 ## Perfect Timing System
 
-**Status:** ✅ Complete  
-**Session:** 8
+**Status:** ✅ Core Complete  
 
 ### Components
 
@@ -68,13 +65,13 @@ Quick reference for all implemented game systems.
 
 1. ANS Begin → bPerfectWindowActive = True
 2. Input during window → CheckPerfectTiming
-3. If perfect → ExecutePerfectStrikeFX (sound + glow)
+3. If perfect → ExecutePerfectStrikeFX
 4. ANS End → bPerfectWindowActive = False
 
 ### Configuration
 
 - Window: ~0.2s (adjust ANS placement in montages)
-- Glow: EmissiveIntensity 0→8→0
+- Glow: EmissiveIntensity 0→0.25→0
 - Material parameter: "EmissiveIntensity"
 
 ---
@@ -82,10 +79,18 @@ Quick reference for all implemented game systems.
 ## Dodge System
 
 **Status:** ✅ Basic Complete  
-**Session:** 7
 
 ### Components
 
+- Two modes: free camera and lock-on camera.
+
+If camera is unlocked:
+
+- always performs Forward animation to the faced direction
+
+If camera is locked:
+
+- Character always faced towards the target
 - 4 animations: Forward/Backward/Left/Right
 - Input: Spacebar
 - Direction: Based on WASD (LastMoveForward/Right)
@@ -110,16 +115,15 @@ Quick reference for all implemented game systems.
 
 ### Future
 
-- [ ] I-frames (via AnimNotify)
-- [ ] Stamina cost
 - [ ] Cancel rules (dodge from attacks?)
+- [ ] I-frames (via AnimNotify) - after basic enemy AI
+- [ ] Stamina cost
 
 ---
 
 ## Lock-On System
 
 **Status:** ✅ Complete  
-**Session:** [unknown]
 
 ### Components
 
@@ -142,7 +146,6 @@ Quick reference for all implemented game systems.
 ## VFX System
 
 **Status:** ✅ Working  
-**Session:** 6-8
 
 ### Sword Trails
 
@@ -161,6 +164,47 @@ Quick reference for all implemented game systems.
 - Dynamic material instance
 - Material parameter: EmissiveIntensity
 - Timeline-driven smooth fade
+
+---
+
+## Surface Material System
+
+**Status:** ✅ Complete  
+**Session:** 9
+
+### Components
+
+- Surface type enum (E_SurfaceType: Stone, Wood)
+- BPI_Damageable interface extended with GetSurfaceType()
+- Bounce logic in hit detection (BP_ThirdPersonCharacter)
+
+### Behavior
+
+- **Stone surfaces:** Deflect attacks, play bounce animation, no damage
+- **Wood surfaces:** Normal damage with full combat feedback
+- **Multi-target:** Handles sequential hits correctly
+
+### Variables
+
+- `SurfaceType` (E_SurfaceType) - Per-enemy variable
+
+### Implementation
+
+- Added to hit detection after "Already Hit Check"
+- Interface check → GetSurfaceType → Switch on enum
+- Stone path: Bounce animation, reset CurrentAttackName
+- Wood path: Existing damage → camera shake → hitstop flow
+
+### Test Assets
+
+- BP_TestDummy (Stone variant) - Stone texture, bounces attacks
+- BP_TestDummy_Wood - Wood texture, takes damage normally
+
+### Future Foundation
+
+- Boss part-break system (armored parts = stone, vulnerable = wood)
+- Dynamic material transitions (stone breaks → becomes wood)
+- Surface-specific VFX/SFX
 
 ---
 
