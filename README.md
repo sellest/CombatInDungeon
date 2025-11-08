@@ -12,6 +12,7 @@ Unreal Engine 5 boss rush game focusing on Monster Hunter-style combat with clos
 1. **Monster Hunter Style** - Deliberate, tactical boss encounters (10 min each)
 2. **Personal experience** - Every attack, every move feels important, player must think of his actions
 3. **Part-Break System** - Target specific boss parts for strategic advantage
+4. **Intimate, Claustrophobic Combat** - RE2/God of War 2018 over-the-shoulder camera
 
 ## Quick Links
 
