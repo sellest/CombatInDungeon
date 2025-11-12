@@ -324,6 +324,10 @@ InputAction: HeavyAndBackward
 - `BeginCharge` - Entry animation
 - `HoldCharge` - Looping hold animation
 - `UnleashCharge` - Release attack animation
+Added column at session 13.11.2025:
+- `AttackingWeapon` (E_WeaponType enum) - Sword or Shield
+Determines which hitbox activates during attack.
+
 
 ---
 
@@ -600,6 +604,13 @@ In ANS_ChargeWindow Received_NotifyTick (when released):
 **No Combo Window:** Charge attacks have no ANS_ComboWindow - cannot combo out once committed.
 
 **Reset:** AN_AttackEnded at end of UnleashCharge clears CurrentAttackName, allowing next combo input.
+
+**Hitboxes:**
+- SwordHitBox (sword attacks)
+- ShieldHitBox (shield attacks)
+- Weapon type defined in DT_Attacks (AttackingWeapon column)
+- ANS_EnableHitBox switches on weapon type
+- Self-hit filtering in overlap events
 
 ---
 

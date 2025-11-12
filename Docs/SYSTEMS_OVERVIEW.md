@@ -208,6 +208,23 @@ If camera is locked:
 
 ---
 
+## Audio System
+
+**Status:** ✅ Complete
+
+### Hit Sounds
+- Function library: BPL_AudioHelpers
+- Data-driven: DT_[Weapon]HitSounds_[Surface]
+- Randomized playback (3-4 variants per table)
+- Sound concurrency (max 3 instances, prevents clipping)
+
+### Integration
+- Enemies reference sound tables
+- Surface type determines which table to use
+- Scales with part-break system (armored vs vulnerable)
+
+---
+
 ## Architecture Notes
 
 ### Data-Driven Design
