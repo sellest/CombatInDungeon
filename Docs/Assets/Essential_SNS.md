@@ -9,20 +9,24 @@
 ## Blend Spaces Available
 
 ### Guard/Block Locomotion:
+
 - ✅ `UE5_SSH_Guard_Jog_Forward_BlendSpace` (IN USE - GuardIdle 
 - `UE5_SSH_Guard_Jog_Start_Backward_Blendspace`
 - `UE5_SSH_Guard_Jog_Stop_Backward_BlendSpace`
 
 ### Dodge (TODO - Priority):
+
 - `UE5_SSH_Dodge_01_L_BlendSpace`
 - `UE5_SSH_Dodge_01_R_BlendSpace`
 - **Use case:** Directional dodge improvements
 
 ### Hit Reactions (TODO):
+
 - `UE5_SSH_Hurt_Light_BlendSpace`
 - **Use case:** Taking damage, flinch reactions
 
 ### Attacks (TODO):
+
 - `UE5_SSH_Thrust_BlendSpace`
 - **Use case:** special focused thrust attacks
 ---
