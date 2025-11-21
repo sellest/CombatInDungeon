@@ -166,6 +166,18 @@ If camera is locked:
 - Timeline-driven smooth fade
 
 ---
+## Boss AI System
+
+**Status:** ✅ Prototype Complete
+**Session:** 20.11.2025
+
+See: [Session_20.11.2025_BossAI_FlinchSystem.md](Sessions/Session_20.11.2025_BossAI_FlinchSystem.md)
+
+- State machine (Idle, Approach, Attack, Recover, Flinch)
+- Flinch resistance system (accumulation + regeneration)
+- Attack cooldown management
+- Data-driven attacks (DT_MavAttacks)
+---
 
 ## Surface Material System
 
