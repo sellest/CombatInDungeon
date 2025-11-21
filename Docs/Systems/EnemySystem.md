@@ -22,21 +22,32 @@ The enemy system uses parent-child Blueprint architecture where **BP_EnemyBase**
 ### Components
 
 **Mesh** (Skeletal Mesh Component - inherited from Character)
+
 - Displays enemy model
 - Assigned to specific character mesh per boss
 - Drives AnimBP (ABP_Enemy)
 - **Note:** Mixamo meshes require Z rotation = -90° in component
 
 **Capsule Component** (inherited from Character)
+
 - Root component
 - Handles physics collision and overlap
 - Disabled on death
 
 **CharacterMovement** (inherited from Character)
+
 - AI locomotion
 - Max Walk Speed: 400 (can be tuned per boss)
 - Orient Rotation to Movement: True
 - Rotation Rate Z: 540
+
+**AttackHitbox** (Sphere Collision Component - Session 21.11)
+
+- Socket-based hitbox attached to hand bone
+- Collision Preset: NoCollision (default)
+- Enabled/disabled via ANS_EnableEnemyHitbox during attacks
+- Radius: 60 (tune per boss/attack)
+- Socket: Attached to `Socket_WeaponHitbox` on hand_r bone
 
 ---
 
@@ -45,6 +56,7 @@ The enemy system uses parent-child Blueprint architecture where **BP_EnemyBase**
 ### E_BossState Enum
 
 **Values:**
+
 - `Idle` - Waiting for player
 - `Approach` - Chasing player
 - `Attack` - Executing attack
@@ -54,11 +66,38 @@ The enemy system uses parent-child Blueprint architecture where **BP_EnemyBase**
 
 ### State Implementation
 
+#### Pre-State Check: Player Death Detection (Session 21.11)
+
+**Before entering state machine:**
+
+```
+TickBossAI:
+    ↓
+    Branch: Is Valid (PlayerRef)?
+    └─ True → Get bIsDead from PlayerRef
+              ↓
+              Branch: bIsDead?
+              ├─ True → Set CurrentBossState = Idle
+              │         Print: "He died. Mav's done."
+              │         Return (exit AI processing)
+              │
+              └─ False → Switch on E_BossState
+                         [... state machine continues ...]
+```
+
+**Why before state machine:**
+
+- Dead player = no AI processing needed
+- Prevents edge cases (mid-flinch, mid-attack, etc.)
+- Single point of truth for player death
+- Boss "freezes" in victory state
+
 #### Idle State
 
 **Purpose:** Passive state, waiting for player
 
 **Logic:**
+
 ```
 TickBossAI → Idle pin:
     Check: IsPlayerInRange(AggroRange = 1000)?
@@ -75,6 +114,7 @@ TickBossAI → Idle pin:
 **Purpose:** Chase player until in attack range
 
 **Logic:**
+
 ```
 TickBossAI → Approach pin:
     Check: IsPlayerInRange(AttackRange = 300)?
@@ -86,6 +126,7 @@ TickBossAI → Approach pin:
 ```
 
 **Movement:**
+
 - Uses AI Controller (Auto Possess AI: Placed in World)
 - CharacterMovement handles rotation (Orient Rotation to Movement)
 - Speed: ApproachSpeed variable (default 400)
@@ -99,6 +140,7 @@ TickBossAI → Approach pin:
 **Purpose:** Execute attack from data table with cooldown validation
 
 **Logic:**
+
 ```
 TickBossAI → Attack pin:
     Branch: bIsExecutingAttack?
@@ -122,11 +164,13 @@ TickBossAI → Attack pin:
 ```
 
 **Cooldown Pattern:**
+
 - Any state can REQUEST attack (set state to Attack)
 - Attack state VALIDATES cooldown
 - If not ready: Either waits or returns to Approach
 
 **Attack Execution Detection (Event Tick):**
+
 ```
 Branch: bIsExecutingAttack?
 └─ True → Check: Is any montage playing?
@@ -145,6 +189,7 @@ Branch: bIsExecutingAttack?
 **Purpose:** Post-attack recovery (placeholder)
 
 **Logic:**
+
 ```
 TickBossAI → Recover pin:
     Set CurrentBossState = Approach
@@ -164,12 +209,14 @@ TickBossAI → Recover pin:
 **Trigger:** CurrentFlinchResistance <= 0 (from damage system)
 
 **Logic:**
+
 ```
 TickBossAI → Flinch pin:
     (Do nothing - animation handles duration)
 ```
 
 **Animation-Driven Exit (Event Tick):**
+
 ```
 Branch: CurrentBossState == Flinch?
 └─ True → Get ABP_Enemy.bShouldFlinch
@@ -179,12 +226,155 @@ Branch: CurrentBossState == Flinch?
 ```
 
 **Interruption:**
+
 - Can interrupt attacks mid-animation
 - Clears `bIsExecutingAttack` flag
 - Stops AI movement
 - Plays flinch animation in ABP
 
 **Transition:** Flinch → Approach (when animation completes)
+
+---
+
+## Attack Hitbox System (Session 21.11)
+
+### Socket-Based Hitbox Architecture
+
+**Philosophy:**
+
+- Hitbox follows weapon/hand during attack animation
+- Socket-based attachment (not floating offset)
+- Enabled only during active frames via AnimNotifyState
+- Prevents multi-hit during single attack (future: AlreadyHitActors array)
+
+### Socket Setup
+
+**Location:** Mav skeletal mesh → Skeleton
+
+**Socket Name:** `Socket_WeaponHitbox`  
+**Parent Bone:** `hand_r` (or `RightHand` for Mixamo)  
+**Position:** At fist/weapon striking point (typically 10-20 units forward of hand)
+
+**Why socket-based:**
+
+- Follows animation bone transforms
+- Accurate to visual weapon position
+- Boss-specific positioning (each boss can adjust socket)
+- Scalable to multiple attack types (future: kick sockets, tail sockets, etc.)
+
+---
+
+### AttackHitbox Component
+
+**Type:** Sphere Collision Component  
+**Parent:** Mesh (attached to Socket_WeaponHitbox)  
+**Default State:** Collision Enabled = NoCollision  
+
+**Settings:**
+
+- Sphere Radius: 60 (tune per boss)
+- Collision Preset: Custom
+- Object Type: WorldDynamic (or Pawn)
+- Collision Response to Pawn: **Overlap** (critical!)
+- Generate Overlap Events: ☑ Checked
+
+**Transform (relative to socket):**
+
+- Location: (0, 0, 0) - socket defines position
+- Rotation: (0, 0, 0)
+
+---
+
+### Overlap Event Logic
+
+**Event:** On Component Begin Overlap (AttackHitbox)
+
+```
+On Component Begin Overlap (AttackHitbox):
+    ↓
+    Cast to BP_ThirdPersonCharacter (Other Actor)
+    ↓
+    Branch: Cast Successful?
+    └─ True → Get CurrentAttackData variable
+              ↓
+              Break S_BossAttackData struct
+              ↓
+              ApplyDamageToActor (BPI_Damageable interface)
+              - Target: Player (from cast)
+              - Damage: Damage field (from struct)
+              ↓
+              Print: "Boss delivered {Damage} damage!"
+```
+
+**Why check CurrentAttackData:**
+
+- Attack state stores active attack properties before playing montage
+- Overlap can read damage from current attack
+- No hardcoded damage values
+- Scalable to multiple attacks per boss
+
+**Future Enhancement:**
+
+```
+Add AlreadyHitActors array (Actor References):
+- Check: Array Contains Other Actor?
+  ├─ True → EXIT (already hit this attack)
+  └─ False → Add to array, apply damage
+- Clear array: When new attack starts or ANS begins
+```
+
+---
+
+### ANS_EnableEnemyHitbox (Session 21.11)
+
+**Type:** AnimNotifyState  
+**Location:** `/Content/Animations/Notifies/`  
+**Purpose:** Enable/disable attack hitbox during active frames of attack animation
+
+**Received_NotifyBegin:**
+
+```
+Get Mesh Owner
+    ↓
+Get Owner (Actor)
+    ↓
+Cast to BP_EnemyBase
+    ↓
+Get AttackHitbox component
+    ↓
+Set Collision Enabled: Query Only
+    ↓
+Print: "Mav hitbox ON" (or boss name)
+```
+
+**Received_NotifyEnd:**
+
+```
+Get Mesh Owner
+    ↓
+Get Owner (Actor)
+    ↓
+Cast to BP_EnemyBase
+    ↓
+Get AttackHitbox component
+    ↓
+Set Collision Enabled: No Collision
+    ↓
+Print: "Mav hitbox OFF"
+```
+
+**Placement in Attack Montages:**
+
+- **Start:** When hand begins forward motion (weapon starts swing)
+- **End:** When swing completes (weapon stops moving)
+- **Typical Duration:** 0.3-0.5 seconds
+- **Tune:** Watch animation, place where weapon would visually hit player
+
+**Why Query Only (not Query and Physics):**
+
+- Hitbox is detection only, not physical collision
+- Same pattern as player sword hitbox
+- Prevents physics interactions
 
 ---
 
@@ -203,6 +393,7 @@ Branch: CurrentBossState == Flinch?
 ### System Flow
 
 **Damage Application:**
+
 ```
 ApplyDamageToActor (Damage parameter):
     Health - Damage → Set Health
@@ -226,6 +417,7 @@ ApplyDamageToActor (Damage parameter):
 ```
 
 **Resistance Regeneration (Event Tick):**
+
 ```
 Branch: CurrentBossState != Flinch AND != Dead?
 └─ True → Branch: (GameTime - LastFlinchDamageTime) > FlinchRegenDelay?
@@ -235,6 +427,7 @@ Branch: CurrentBossState != Flinch AND != Dead?
 ```
 
 **Example (10 damage per hit, 100 resistance):**
+
 - Hits 1-9: Resistance decreases (90, 80, 70...)
 - Hit 10: Resistance breaks (0) → Flinch triggered
 - After flinch: Resistance resets to 100
@@ -243,16 +436,19 @@ Branch: CurrentBossState != Flinch AND != Dead?
 ### Design Rationale
 
 **Why Animation-Driven:**
+
 - Flinch is brief (~0.8s)
 - Duration defined by animation (designer control)
 - No time tracking needed (simpler)
 
 **Why Reset to Max:**
+
 - Monster Hunter pattern
 - Prevents flinch-locking (spam)
 - Creates rhythm (10 hits → flinch → repeat)
 
 **Future Expansion:**
+
 - Stagger resistance (longer interrupt, 200 damage)
 - Knockdown resistance (ground state, 500 damage)
 - Part-break resistance (permanent weakpoint)
@@ -310,6 +506,7 @@ Branch: CurrentBossState != Flinch AND != Dead?
 | MavSwing | AM_MavSwing | 10.0 | 3.0 | 0.0 | 300.0 |
 
 **Future Expansion:**
+
 - Add 2-3 more attacks (variety)
 - Random attack selection (weighted by table)
 - Possibly split Damage into HealthDamage/FlinchDamage (weapon type variety)
@@ -331,6 +528,7 @@ Branch: CurrentBossState != Flinch AND != Dead?
 **Function:** ApplyDamageToActor(Damage)
 
 **Flow (Updated Session 20.11):**
+
 ```
 ApplyDamageToActor (Damage input):
     Branch: bIsDead? → EXIT if already dead
@@ -356,6 +554,7 @@ ApplyDamageToActor (Damage input):
 **Triggered when:** Health <= 0
 
 **Logic:**
+
 ```
 Set bIsDead = True
     ↓
@@ -367,6 +566,7 @@ Get Capsule Component
 ```
 
 **Result:**
+
 - Death animation plays via state machine
 - Collision disabled (can walk through corpse)
 - Corpse remains in world (does not despawn)
@@ -423,6 +623,7 @@ Death (terminal state)
 ### Event Graph Logic
 
 **Event Blueprint Update Animation:**
+
 ```
 1. Update bIsDead from owner:
    Get Owner → Cast to BP_EnemyBase
@@ -454,6 +655,7 @@ Death (terminal state)
 **Location:** `/Content/Enemies/MavJLargo/`
 
 **Files:**
+
 - Skeletal Mesh (T-Pose with skin)
 - Skeleton
 - Idle animation
@@ -464,6 +666,7 @@ Death (terminal state)
 ### Configuration
 
 **In BP_EnemyBase (currently configured for Mav):**
+
 - Mesh: Mav J Largo skeletal mesh (Z rotation: -90°)
 - AnimBP: ABP_Enemy
 - Health: 100
@@ -472,6 +675,7 @@ Death (terminal state)
 - Hit sounds: DT_SwordHitSounds_Flesh
 
 **AI Settings:**
+
 - AggroRange: 1000 (detection distance)
 - AttackRange: 300 (attack trigger distance)
 - ApproachSpeed: 400 (chase speed)
@@ -494,6 +698,7 @@ Death (terminal state)
 | FleshHit_03 | Flesh impact sound |
 
 **Playback:** BPL_AudioHelpers → PlayRandomHitSound
+
 - Randomly selects from table rows
 - Plays at actor location
 - Uses Player Controller as world context
@@ -505,12 +710,14 @@ Death (terminal state)
 ### Animation-Driven vs Time-Driven States
 
 **Animation-Driven (Flinch):**
+
 - State duration = animation length
 - Exit detected by checking ABP flag
 - Clean, designer-friendly
 - No time tracking needed
 
 **Time-Driven (Future: Stun, Knockdown):**
+
 - State duration = hardcoded value
 - Exit detected by time comparison
 - More control, independent of animation
@@ -519,11 +726,13 @@ Death (terminal state)
 ### State Machine Event Flow
 
 **TickBossAI (every frame):**
+
 - Switch on CurrentBossState
 - Each state handles logic
 - State transitions via CurrentBossState
 
 **Event Tick (parallel checks):**
+
 - Attack execution detection
 - Flinch animation completion
 - Resistance regeneration
@@ -532,6 +741,7 @@ Death (terminal state)
 ### Cooldown Pattern
 
 **Centralized in Attack state:**
+
 - Any state can REQUEST attack
 - Attack state VALIDATES cooldown
 - If fails: Return to Approach or wait
@@ -551,10 +761,12 @@ Death (terminal state)
 ### Current (Deferred to Next Session)
 
 **Camera/Input:**
+
 - Camera lock targets root (strange angles)
 - Stick drift (no deadzone on movement input)
 
 **Combat:**
+
 - No attack telegraphs (can't predict attacks)
 - Boss only has 1 attack (repetitive)
 - Attack cooldown tuning needed
@@ -565,6 +777,7 @@ Death (terminal state)
 ## Testing Checklist
 
 **Basic Functionality:**
+
 - ✅ Mav appears in level with idle animation
 - ✅ Detects player at 1000 units (Idle → Approach)
 - ✅ Chases player smoothly (no rotation issues)
@@ -582,6 +795,7 @@ Death (terminal state)
 - ✅ Corpse remains visible
 
 **Combat Loop:**
+
 - ✅ Chase → Attack → Cooldown → Chase rhythm works
 - ✅ Player can build flinch through hits
 - ✅ Flinch interrupts boss attacks (mid-swing)
@@ -635,26 +849,31 @@ Death (terminal state)
 ### What's Proven (Session 20.11)
 
 **State machine scales:**
+
 - ✅ Easy to add states (Stun, Knockdown, etc.)
 - ✅ Clean separation of concerns
 - ✅ Animation-driven vs time-driven patterns work
 
 **Data-driven attacks work:**
+
 - ✅ Add rows = new attacks
 - ✅ Centralized properties (damage, cooldown)
 - ✅ Ready for random selection
 
 **Parent-child architecture ready:**
+
 - ✅ BP_EnemyBase = complete system
 - ✅ Configuration variables identified
 - ✅ BP_Boss_Mav would be pure config
 
 **Resistance pattern reusable:**
+
 - ✅ Flinch system established
 - ✅ Same pattern for stagger/knockdown
 - ✅ Scalable to part-breaks
 
 **Combat loop is FUN:**
+
 - ✅ Validated by playtest
 - ✅ Rhythm-based gameplay works
 - ✅ Boss feels like opponent
@@ -664,6 +883,7 @@ Death (terminal state)
 **Time:** 30-60 minutes
 
 **Process:**
+
 1. Create BP_Boss_[Name] child (5 min)
 2. Import mesh/animations (10 min)
 3. Set configuration variables (5 min)
@@ -671,6 +891,7 @@ Death (terminal state)
 5. Test and tune (10-30 min)
 
 **Inherits from BP_EnemyBase:**
+
 - All state machine logic
 - Flinch resistance system
 - Attack execution framework
@@ -708,23 +929,27 @@ Death (terminal state)
 ## Design Philosophy
 
 **Parent-Child Architecture:**
+
 - BP_EnemyBase = Systems (reusable)
 - BP_Boss_[Name] = Configuration (per-boss)
 - Minimize duplication, maximize reusability
 
 **Monster Hunter Inspiration:**
+
 - Flinch/stagger/knockdown resistance tiers
 - Rhythm-based combat (build → break → punish)
 - Boss-scale enemies (not crowds)
 - Part-break potential (future)
 
 **Prototype → Polish Workflow:**
+
 - Build systems properly first time
 - Validate with playtest ("feels like a game")
 - Tune based on feel (not theory)
 - Polish annoyances after core works
 
 **Data-Driven Design:**
+
 - Attack properties in tables
 - State behavior in blueprints
 - Easy to tune without code changes
