@@ -1,20 +1,21 @@
 # Player Damage System Documentation
 
-**Status:** ✅ Complete  
-**Session:** 21.11.2025  
-**Purpose:** Player health, damage mitigation, and death mechanics
+**Status:** ✅ Complete + Flinch System  
+**Sessions:** 21.11.2025 (initial), 27.11.2025 (flinch, hit feedback, mesh detection)  
+**Purpose:** Player health, damage mitigation, flinch reactions, and death mechanics
 
 ---
 
 ## Overview
 
-The Player Damage System handles all incoming damage to the player character, including mitigation through defensive actions (blocking, dodging), health management, and death state. The system is designed around player-owned defensive state - the boss reports damage, the player determines how much to actually take.
+The Player Damage System handles all incoming damage to the player character, including mitigation through defensive actions (blocking, dodging), flinch level calculation, health management, and death state. The system is designed around player-owned defensive state - the boss reports damage and flinch level, the player determines how much to actually take.
 
 **Design Philosophy:**
 - **Player owns mitigation logic** - All defensive state (blocking, i-frames, armor, buffs) checked player-side
-- **Boss just reports damage** - Enemy doesn't need to know about player's defensive capabilities
+- **Boss just reports damage + flinch** - Enemy doesn't need to know about player's defensive capabilities
 - **Expandable foundation** - Easy to add new mitigation sources (armor, potions, guard points, etc.)
 - **Interface-based** - Uses BPI_Damageable for consistent damage application
+- **Mesh-based hit detection** - Accurate collision against player body, not oversized capsule
 
 ---
 
@@ -24,16 +25,17 @@ The Player Damage System handles all incoming damage to the player character, in
 
 **Boss Perspective:**
 ```
-"I'm attacking for 10 damage"
-→ ApplyDamageToActor(10)
+"I'm attacking for 10 damage, flinch level 1"
+→ ApplyDamageToActor(10, 1)
 ```
 
 **Player Perspective:**
 ```
-"I received 10 damage attack"
+"I received 10 damage attack, flinch level 1"
 → Check MY state: Blocking? I-frames? Buffed?
-→ Apply mitigation
-→ Take 3 final damage
+→ Apply damage mitigation → 3 final damage
+→ Apply flinch mitigation → 0 final flinch (blocked)
+→ Play block impact animation
 ```
 
 **Why this architecture:**
@@ -66,7 +68,25 @@ The Player Damage System handles all incoming damage to the player character, in
 
 **Usage:**
 - `bIsDead` - Triggers death animation, disables input, stops boss AI
-- `bIsInvulnerable` - Set by ANS_IFrames during dodge, negates all damage
+- `bIsInvulnerable` - Set by ANS_IFrames during dodge, negates all damage and flinch
+
+---
+
+## BPI_Damageable Interface (Updated 27.11.2025)
+
+**Function:** ApplyDamageToActor
+
+**Signature:**
+- Input: `Damage` (Float) - Raw damage from attacker
+- Input: `FlinchLevel` (Integer) - Raw flinch level from attacker
+- Output: None
+
+**Why FlinchLevel in interface:**
+- Boss reports both values, player handles both internally
+- Same pattern as damage - boss doesn't know player's mitigation
+- Cleaner than separate calls or casting
+
+**Note:** Boss (BP_EnemyBase) also implements this interface but ignores FlinchLevel - uses own flinch resistance system.
 
 ---
 
@@ -131,46 +151,91 @@ After blocking check, before return:
 
 ---
 
-### ApplyDamageToActor
+### CalculateFlinchReduction (Session 27.11.2025)
+
+**Location:** BP_ThirdPersonCharacter → Functions  
+**Type:** Function  
+**Purpose:** Central flinch mitigation - mirrors damage pattern
+
+**Signature:**
+- Input: `IncomingFlinchLevel` (Integer) - Raw flinch level from attacker
+- Output: `FinalFlinchLevel` (Integer) - Flinch level after mitigation
+
+**Implementation:**
+
+```
+CalculateFlinchReduction (IncomingFlinchLevel):
+    ↓
+    Branch: bIsInvulnerable?
+    ├─ True → Return 0 (dodged, no flinch)
+    │
+    └─ False → Branch: bIsBlocking?
+               ├─ True → FinalFlinchLevel = IncomingFlinchLevel - 1
+               │         Clamp (Min: 0, Max: 3)
+               │         Return FinalFlinchLevel
+               │
+               └─ False → Return IncomingFlinchLevel (full flinch)
+```
+
+**Flinch Mitigation:**
+| Attack Flinch | Blocked | Unblocked |
+|---------------|---------|-----------|
+| Light (1) | 0 - no reaction | Light flinch |
+| Medium (2) | 1 - light flinch | Medium flinch |
+| Heavy (3) | 2 - medium flinch | Knockback |
+
+**Same priority as damage:**
+1. I-frames → no flinch
+2. Block → reduce by 1
+3. No mitigation → full flinch
+
+---
+
+### ApplyDamageToActor (Updated 27.11.2025)
 
 **Location:** BP_ThirdPersonCharacter → Functions  
 **Interface:** BPI_Damageable  
-**Purpose:** Apply final damage to health and trigger appropriate feedback
+**Purpose:** Apply final damage/flinch to health and trigger appropriate feedback
 
 **Signature:**
 - Input: `Damage` (Float) - Raw damage from attacker
+- Input: `FlinchLevel` (Integer) - Raw flinch level from attacker
 - Output: None (interface function)
 
 **Implementation:**
 
 ```
-ApplyDamageToActor (Damage):
+ApplyDamageToActor (Damage, FlinchLevel):
     ↓
     Branch: bIsDead?
     ├─ True → Return (ignore damage when dead)
     │
-    └─ False → CalculateDamageReduction (Damage)
-               → Returns FinalDamage
-               ↓
-               CurrentHealth - FinalDamage = NewHealth
-               Set CurrentHealth = NewHealth
-               ↓
-               Branch: CurrentHealth <= 0?
-               ├─ True → Set CurrentHealth = 0 (clamp)
-               │         HandlePlayerDeath (function call)
-               │
-               └─ False → HandlePlayerHit (function call)
+    └─ False → 
+        FinalDamage = CalculateDamageReduction (Damage)
+        FinalFlinchLevel = CalculateFlinchReduction (FlinchLevel)
+        ↓
+        CurrentHealth - FinalDamage = NewHealth
+        Set CurrentHealth = NewHealth
+        ↓
+        Branch: CurrentHealth <= 0?
+        ├─ True → Set CurrentHealth = 0 (clamp)
+        │         HandlePlayerDeath (function call)
+        │
+        └─ False → Branch: FinalDamage > 0?
+                   ├─ True → HandlePlayerHit (FinalDamage, FinalFlinchLevel)
+                   └─ False → Skip (dodged, no feedback needed)
 ```
 
-**Why check bIsDead first:**
-- Prevents damage processing on corpse
-- Boss might still be attacking when player dies
-- Clean exit for all damage sources
+**Key Changes (Session 27.11):**
+- Added FlinchLevel parameter
+- Calls both CalculateDamageReduction and CalculateFlinchReduction
+- Only calls HandlePlayerHit if FinalDamage > 0 (no feedback on dodge)
+- Passes both FinalDamage and FinalFlinchLevel to HandlePlayerHit
 
-**Why clamp to 0:**
-- Prevents negative health values
-- Clean for UI display
-- Consistent death threshold
+**Why check FinalDamage > 0:**
+- Dodge = 0 damage = no hit feedback needed
+- Block = reduced damage = still needs feedback
+- Clean gate for feedback system
 
 ---
 
@@ -226,34 +291,145 @@ HandlePlayerDeath:
 
 ---
 
-### HandlePlayerHit
+### HandlePlayerHit (Updated 27.11.2025)
 
 **Location:** BP_ThirdPersonCharacter → Functions  
-**Type:** Function (placeholder)  
-**Purpose:** Non-lethal damage feedback
+**Type:** Function  
+**Purpose:** Non-lethal damage feedback - sound and flinch animations
 
-**Current Implementation:**
+**Signature:**
+- Input: `FinalDamage` (Float) - Damage after mitigation
+- Input: `FinalFlinchLevel` (Integer) - Flinch level after mitigation
+
+**Implementation:**
+
 ```
-HandlePlayerHit:
+HandlePlayerHit (FinalDamage, FinalFlinchLevel):
     ↓
-    Print String: "Player Hit! Health: {CurrentHealth}"
+    Branch: bIsBlocking?
+    │
+    ├─ True → BLOCKED HIT
+    │         Play Sound: Block impact sound
+    │         Play Montage: AM_BlockFlinch
+    │
+    └─ False → UNBLOCKED HIT
+               Play Sound: Pain grunt
+               ↓
+               Branch: FinalFlinchLevel > 0?
+               ├─ True → Play Montage: AM_Flinch_Light
+               └─ False → No flinch animation
 ```
 
-**Future Enhancements:**
+**Hit Feedback (Session 27.11):**
+- **Blocked:** Block impact sound + block flinch animation (always, regardless of flinch level)
+- **Unblocked:** Pain grunt + directional flinch animation (if flinch level > 0)
+
+**Montages:**
+- `AM_BlockFlinch` - Small shield impact animation
+- `AM_Flinch_Light` - Light hit reaction (can use blend space for directional later)
+
+**Future: Flinch Level Variations:**
 ```
-HandlePlayerHit:
+Branch: FinalFlinchLevel?
+├─ 0 → No animation
+├─ 1 → AM_Flinch_Light
+├─ 2 → AM_Flinch_Medium
+└─ 3 → AM_Knockback
+```
+
+---
+
+## Mesh-Based Hit Detection (Session 27.11.2025)
+
+### Problem
+
+Boss hitbox overlaps player Capsule (huge for movement) before Mesh (actual body). Capsule triggers damage even when sword visually misses.
+
+### Solution
+
+Check which component was hit. Only process damage if hit component is the Mesh.
+
+### Player Mesh Collision Settings
+
+**BP_ThirdPersonCharacter → Mesh component → Collision:**
+- **Collision Enabled:** Query Only
+- **Object Type:** Pawn
+- **Generate Overlap Events:** ☑ Checked
+- **Collision Response to WorldDynamic:** Overlap
+
+**Physics Asset (on mesh):**
+- Select all bodies
+- **Physics Type:** Kinematic (not Simulated)
+- **Collision Response:** Enabled
+
+### Boss-Side Check (DeliverHitboxDamage)
+
+```
+DeliverHitboxDamage (OtherActor, HitComponent):
     ↓
-    Branch: FinalDamage > 0?
-    └─ True → Play hit sound
-              Trigger camera shake (small)
-              Flash screen red briefly
-              Play hit reaction animation (if not blocking/dodging)
+    Cast to BP_ThirdPersonCharacter (OtherActor)
+    ├─ Failed → Return
+    │
+    └─ Success → Branch: Is Valid?
+                 ├─ False → Return
+                 │
+                 └─ True → Get Mesh (from cast)
+                           ↓
+                           Branch: HitComponent == Mesh?
+                           ├─ False → Return (hit capsule, ignore)
+                           │
+                           └─ True → [AlreadyHitActors check]
+                                     ↓
+                                     ApplyDamageToActor (Damage, FlinchLevel)
 ```
 
-**Why placeholder:**
-- Core feedback works (health decreases)
-- Polish layer can be added incrementally
-- Doesn't block core system functionality
+**Result:**
+- Capsule overlaps → filtered out
+- Mesh overlaps → damage processed
+- Visually accurate hit detection
+
+---
+
+## Flinch Level System (Session 27.11.2025)
+
+### Design Overview
+
+Flinch level is separate from damage. A weak attack can have high flinch (stagger), a strong attack can have low flinch (clean hit).
+
+### Flinch Levels
+
+| Level | Name | Unblocked Effect | Blocked Effect |
+|-------|------|------------------|----------------|
+| 0 | None | No reaction | Block impact only |
+| 1 | Light | Light flinch | No flinch (reduced to 0) |
+| 2 | Medium | Medium flinch | Light flinch (reduced to 1) |
+| 3 | Heavy | Knockback | Medium flinch (reduced to 2) |
+
+### Data Structure
+
+**S_BossAttackData (updated):**
+| Column | Type | Purpose |
+|--------|------|---------|
+| AttackName | Name | Row identifier |
+| AttackMontage | Anim Montage | Animation to play |
+| Damage | Float | Health damage |
+| FlinchLevel | Integer | Flinch severity (0-3) |
+| Cooldown | Float | Seconds before can attack again |
+
+### Flow
+
+```
+Boss Attack (10 damage, flinch 1)
+    ↓
+DeliverHitboxDamage → ApplyDamageToActor(10, 1)
+    ↓
+Player: CalculateDamageReduction(10) → 3 (blocked)
+Player: CalculateFlinchReduction(1) → 0 (blocked, reduced by 1)
+    ↓
+HandlePlayerHit(3, 0)
+    ↓
+bIsBlocking = True → Play block sound + AM_BlockFlinch
+```
 
 ---
 
@@ -334,15 +510,19 @@ Death State:
 
 **How it works:**
 ```
-Boss attacks (10 damage)
+Boss attacks (10 damage, flinch 1)
     ↓
-Player.ApplyDamageToActor(10)
+Player.ApplyDamageToActor(10, 1)
     ↓
 CalculateDamageReduction checks bIsBlocking
     ├─ True → 10 * 0.3 = 3 damage
     └─ False → 10 damage
     ↓
-CurrentHealth - FinalDamage
+CalculateFlinchReduction checks bIsBlocking
+    ├─ True → 1 - 1 = 0 flinch
+    └─ False → 1 flinch
+    ↓
+HandlePlayerHit(3, 0) → Block sound + block animation
 ```
 
 **Block system provides:**
@@ -355,19 +535,29 @@ CurrentHealth - FinalDamage
 - Can be tuned: Change multiplier in CalculateDamageReduction
 - Future: Different reduction per block type (shield vs parry vs deflect)
 
+**Flinch reduction:**
+- **-1 level** (light negated, medium→light, heavy→medium)
+- Tunable: Change subtraction value in CalculateFlinchReduction
+
 ---
 
 ### I-Frames Integration (Dodge)
 
 **How it works:**
 ```
-Boss attacks (10 damage)
+Boss attacks (10 damage, flinch 1)
     ↓
-Player.ApplyDamageToActor(10)
+Player.ApplyDamageToActor(10, 1)
     ↓
 CalculateDamageReduction checks bIsInvulnerable
     ├─ True → 0 damage (100% negation)
     └─ False → Continue to blocking check
+    ↓
+CalculateFlinchReduction checks bIsInvulnerable
+    ├─ True → 0 flinch (100% negation)
+    └─ False → Continue to blocking check
+    ↓
+FinalDamage = 0 → HandlePlayerHit NOT called
 ```
 
 **I-frame system provides:**
@@ -376,9 +566,9 @@ CalculateDamageReduction checks bIsInvulnerable
 - Duration: 0.4s (God of War style - 50% of dodge)
 
 **Why i-frames check first:**
-- I-frames = complete immunity
+- I-frames = complete immunity (damage AND flinch)
 - Overrides all other mitigation
-- Dodge while blocking = i-frames take priority
+- Dodge while blocking = i-frames win
 
 **See DodgeSystem.md for i-frame implementation details.**
 
@@ -386,10 +576,10 @@ CalculateDamageReduction checks bIsInvulnerable
 
 ### Priority Order (Critical)
 
-**Mitigation checks in CalculateDamageReduction:**
+**Mitigation checks in both functions:**
 
-1. **bIsInvulnerable** (I-frames) - 100% negation
-2. **bIsBlocking** (Block) - 70% reduction
+1. **bIsInvulnerable** (I-frames) - 100% negation, highest priority
+2. **bIsBlocking** (Block) - 70% damage reduction, -1 flinch level
 3. **Future systems** (armor, buffs, guard points)
 
 **Why this order matters:**
@@ -399,31 +589,43 @@ CalculateDamageReduction checks bIsInvulnerable
 
 ---
 
-## Boss Integration
+## Boss Integration (Updated 27.11.2025)
 
 **Boss-side implementation:**
 
-In BP_EnemyBase → AttackHitbox overlap event:
+In BP_EnemyBase → DeliverHitboxDamage:
 
 ```
-On Component Begin Overlap:
+DeliverHitboxDamage (OtherActor, HitComponent):
     ↓
     Cast to BP_ThirdPersonCharacter
     ↓
-    Get CurrentAttackData.Damage (10.0)
-    ↓
-    ApplyDamageToActor (Target: Player, Damage: 10.0)
+    Branch: Is Valid?
+    └─ True → Get Mesh
+              ↓
+              Branch: HitComponent == Mesh?
+              ├─ False → Return (capsule hit, ignore)
+              │
+              └─ True → Branch: AlreadyHitActors Contains?
+                        ├─ True → Return (already hit this swing)
+                        │
+                        └─ False → Add to AlreadyHitActors
+                                   ↓
+                                   Get CurrentAttackData.Damage
+                                   Get CurrentAttackData.FlinchLevel
+                                   ↓
+                                   ApplyDamageToActor (Damage, FlinchLevel)
 ```
 
 **Boss doesn't know:**
 - ❌ If player is blocking
 - ❌ If player has i-frames
 - ❌ If player has armor/buffs
-- ❌ Player's final damage taken
+- ❌ Player's final damage/flinch taken
 
 **Boss only knows:**
 - ✅ "I hit with my attack"
-- ✅ "My attack deals 10 damage"
+- ✅ "My attack deals 10 damage, flinch level 1"
 
 **Player handles everything else.**
 
@@ -455,25 +657,30 @@ Event BeginPlay:
 ### Basic Damage Flow
 
 **Test 1: Unmitigated Damage**
-1. Boss attacks (10 damage)
+1. Boss attacks (10 damage, flinch 1)
 2. Player stands still (no block, no dodge)
 3. Expected:
    - Print: "Hit! 10 damage"
    - Health: 90 / 100
+   - Pain grunt plays
+   - Light flinch animation plays
 
 **Test 2: Blocked Damage**
-1. Boss attacks (10 damage)
+1. Boss attacks (10 damage, flinch 1)
 2. Player holds R2 (blocking)
 3. Expected:
    - Print: "Blocked! 10 → 3"
    - Health: 97 / 100
+   - Block impact sound plays
+   - Block flinch animation plays (flinch reduced to 0)
 
 **Test 3: I-Frame Dodge**
-1. Boss attacks (10 damage)
-2. Player dodges during i-frame window (0.1s - 0.5s)
+1. Boss attacks (10 damage, flinch 1)
+2. Player dodges during i-frame window
 3. Expected:
    - Print: "Dodged! No damage received"
    - Health: unchanged (100 / 100)
+   - No sound, no animation (HandlePlayerHit not called)
 
 **Test 4: Death**
 1. Take 10 hits without blocking (100 HP / 10 damage)
@@ -483,30 +690,36 @@ Event BeginPlay:
    - Input disabled
    - Boss stops attacking
 
+**Test 5: Mesh vs Capsule Hit**
+1. Boss swings near player but misses body
+2. Sword passes through capsule but not mesh
+3. Expected:
+   - No damage (capsule hit filtered out)
+
 ---
 
 ### Edge Cases
 
-**Test 5: Damage While Dead**
+**Test 6: Damage While Dead**
 1. Player at 0 HP (dead)
 2. Boss attacks again
 3. Expected:
    - No damage processing (early exit in ApplyDamageToActor)
    - No prints, no health change
 
-**Test 6: Overkill Damage**
+**Test 7: Overkill Damage**
 1. Player at 5 HP remaining
 2. Boss deals 50 damage
 3. Expected:
    - Health clamped to 0 (not -45)
    - Death triggers normally
 
-**Test 7: Dodge + Block Simultaneously**
+**Test 8: Dodge + Block Simultaneously**
 1. Player dodging while holding R2
 2. Boss attacks during i-frame window
 3. Expected:
    - I-frames take priority
-   - 0 damage taken (not reduced damage)
+   - 0 damage, 0 flinch (not reduced values)
 
 ---
 
@@ -514,11 +727,15 @@ Event BeginPlay:
 
 **Cost:** Negligible (< 0.01ms per damage event)
 
-**CalculateDamageReduction:**
-- 2-3 boolean checks (extremely fast)
-- 1-2 float multiplications
+**CalculateDamageReduction + CalculateFlinchReduction:**
+- 4-6 boolean checks (extremely fast)
+- 2-3 arithmetic operations
 - No loops, no arrays
 - Runs only when hit (not every frame)
+
+**Mesh Hit Detection:**
+- Simple component comparison
+- No performance impact
 
 **Scalability:**
 - Works identically for 1 player or 4 (co-op ready)
@@ -536,15 +753,22 @@ Event BeginPlay:
 - Expected behavior: Full input lock
 - Future: Allow camera movement during death
 
-**No Hit Stun:**
-- Player can attack while taking damage
-- No flinch/stagger animation yet
-- Deferred to polish phase
+**Single Flinch Animation:**
+- Only light flinch implemented
+- Medium flinch and knockback deferred
+- Directional flinch deferred
 
-**No Visual Feedback:**
-- No screen flash, camera shake, or hit VFX
-- Debug prints only
-- Placeholder for polish
+**Sound Variety:**
+- Single sound per state (block hit, unblocked hit)
+- Future: Randomized sound selection from data table
+
+---
+
+### Fixed (Session 27.11.2025)
+
+- ✅ No hit feedback (added sounds and animations)
+- ✅ Capsule hit detection (now mesh-based)
+- ✅ No flinch system (now implemented)
 
 ---
 
@@ -552,22 +776,22 @@ Event BeginPlay:
 
 ### High Priority
 
-0. **Block Hit box**
-    - Shield should be raised towards attack
-    - Damage outside of the block-hitbox should not be affected by the blocking state
+1. **Block Hitbox** (2 hours)
+   - Shield should be raised towards attack
+   - Damage outside of block-hitbox not affected by blocking state
+   - Directional blocking
 
-1. **Player Flinch Animation** (20 min)
-   - Add Flinch state to ABP_Unarmed
-   - Trigger on heavy hits (> 20 damage?)
-   - Brief interrupt (0.5s)
+2. **Medium/Heavy Flinch** (1 hour)
+   - AM_Flinch_Medium animation
+   - AM_Knockback animation
+   - Expanded HandlePlayerHit branching
 
-2. **Hit Feedback VFX/SFX** (30 min)
-   - Screen flash (red overlay, 0.1s fade)
-   - Camera shake (small on hit, large on death)
-   - Hit sound (grunt, pain sound)
-   - Blood spray particles (optional)
+3. **Randomized Hit Sounds** (30 min)
+   - Data table with sound variants
+   - Random selection per hit
+   - Same pattern as weapon hit sounds
 
-3. **Health Bar UI** (1 hour)
+4. **Health Bar UI** (1 hour)
    - Widget Blueprint: Health bar
    - Update on damage
    - Flash/pulse on low health
@@ -576,25 +800,26 @@ Event BeginPlay:
 
 ### Medium Priority
 
-4. **Armor System** (1-2 hours)
+5. **Armor System** (1-2 hours)
    - Add ArmorValue variable (0.0 to 1.0)
    - Integrate in CalculateDamageReduction
    - Equipment that modifies armor
    - Visual feedback (sparks on armored hits)
 
-5. **Perfect Block** (1 hour)
+6. **Perfect Block** (1 hour)
    - Timing window at block start (0.2s)
    - 100% damage negation on perfect block
+   - 100% flinch negation
    - Unique feedback (parry flash, sound ding)
    - Possible: Counter-attack window
 
-6. **Guard Points** (2 hours)
+7. **Guard Points** (2 hours)
    - Specific frames in attack animations have defensive properties
    - ANS_GuardPoint sets bGuardPointActive
-   - Reduces damage during specific attack frames
+   - Reduces damage/flinch during specific attack frames
    - Monster Hunter-style active defense
 
-7. **Stamina System Integration** (2-3 hours)
+8. **Stamina System Integration** (2-3 hours)
    - Block costs stamina per hit blocked
    - Dodge costs stamina to execute
    - Out of stamina = can't block/dodge
@@ -604,20 +829,21 @@ Event BeginPlay:
 
 ### Polish Phase
 
-8. **Damage Numbers** (30 min)
+9. **Damage Numbers** (30 min)
    - Floating damage text on hit
    - Color-coded: Red (full), Yellow (reduced), Blue (blocked)
 
-9. **Directional Hit Reactions** (1 hour)
-   - Different flinch animations based on hit direction
-   - Blend space for smooth directional flinches
+10. **Directional Flinch** (1 hour)
+    - Use UE5_SSH_Hurt_Light_BlendSpace for directional reactions
+    - Calculate hit direction from attacker position
+    - Different animations based on hit angle
 
-10. **Death Screen / Respawn** (2 hours)
+11. **Death Screen / Respawn** (2 hours)
     - Game over UI
     - Respawn at checkpoint
     - "You Died" screen (Dark Souls style)
 
-11. **Invincibility Frames on Spawn** (30 min)
+12. **Invincibility Frames on Spawn** (30 min)
     - Brief invulnerability after respawn
     - Prevent spawn camping by boss
 
@@ -637,67 +863,70 @@ Event BeginPlay:
 
 **Chosen approach:**
 - ✅ Player owns all defensive state
-- ✅ Boss just reports raw damage
+- ✅ Boss just reports raw damage + flinch
 - ✅ Easy to expand player abilities without touching boss
 - ✅ Clean separation of concerns
 
 ---
 
-### Why Separate CalculateDamageReduction?
+### Why FlinchLevel in Interface?
 
-**Alternative considered:** All mitigation logic inline in ApplyDamageToActor
+**Alternatives considered:**
+1. Separate interface call for flinch
+2. Cast and set pending variable
+3. Player-specific function bypassing interface
 
 **Rejected because:**
-- ❌ Function becomes bloated (50+ nodes)
-- ❌ Hard to debug (where's the bug?)
-- ❌ Not reusable (fall damage needs different application logic)
+- ❌ Multiple calls for one hit event
+- ❌ Implicit state (pending variable)
+- ❌ Different patterns for different damage sources
 
 **Chosen approach:**
-- ✅ Mitigation = separate concern from application
-- ✅ Reusable from multiple damage sources
-- ✅ Easy to unit test (pass in damage, check output)
-- ✅ Expandable without modifying application logic
+- ✅ Single interface call with both values
+- ✅ Boss (attacker) ignores FlinchLevel in own implementation
+- ✅ Clean, explicit contract
+- ✅ Feels slightly impure but most pragmatic
 
 ---
 
-### Why HandlePlayerDeath Function?
+### Why Separate CalculateFlinchReduction?
 
-**Alternative considered:** Death logic inline in ApplyDamageToActor
+**Alternative considered:** Inline flinch logic in ApplyDamageToActor
 
 **Rejected because:**
-- ❌ Not reusable (instant-kill hazards need same death sequence)
-- ❌ Mixed responsibility (damage calc + death effects)
-- ❌ Hard to expand (where do I add death camera?)
+- ❌ Mirrors damage pattern = should mirror architecture
+- ❌ Function becomes bloated
+- ❌ Hard to expand (different flinch modifiers)
 
 **Chosen approach:**
-- ✅ Death sequence is separate concern
-- ✅ Reusable from any death source
-- ✅ Easy to expand (VFX, SFX, UI, camera)
-- ✅ Single Responsibility Principle
+- ✅ Same pattern as CalculateDamageReduction
+- ✅ Single responsibility
+- ✅ Expandable (armor could affect flinch too)
+- ✅ Easy to debug
 
 ---
 
-### Why I-Frames Over Invincibility Timer?
+### Why Mesh-Based Hit Detection?
 
-**Alternative considered:** Dodge sets invincible for X seconds
+**Alternative considered:** Capsule-based (default UE behavior)
 
 **Rejected because:**
-- ❌ Doesn't sync with animation
-- ❌ Hard to tune per dodge type
-- ❌ Animation speed changes break timing
+- ❌ Capsule is huge (for movement/navigation)
+- ❌ Hits register when visually missing
+- ❌ I-frames feel unfair ("I dodged that!")
 
-**Chosen approach (ANS_IFrames):**
-- ✅ Synced to animation frames (designer-friendly)
-- ✅ Visual in timeline (easy to tune)
-- ✅ Per-montage control (forward dodge ≠ backward dodge)
-- ✅ Same pattern as other systems (perfect timing, hitboxes)
+**Chosen approach:**
+- ✅ Mesh collision follows body
+- ✅ Visually accurate hits
+- ✅ Fair i-frame timing
+- ✅ Physics Asset follows skeleton animation
 
 ---
 
 ## Related Systems
 
 **Upstream (triggers damage):**
-- Enemy Attack System (boss hitbox overlaps)
+- Enemy Attack System (boss hitbox overlaps player mesh)
 - Environmental Hazards (future: spikes, fire, fall damage)
 - DoT Effects (future: poison, bleed)
 
@@ -711,7 +940,7 @@ Event BeginPlay:
 - Death Animation (ABP_Unarmed death state)
 - Boss AI (checks player.bIsDead to stop attacking)
 - UI System (future: health bar, damage numbers)
-- Audio System (future: hit sounds, death scream)
+- Audio System (hit sounds integrated)
 
 ---
 
@@ -720,15 +949,19 @@ Event BeginPlay:
 ### Key Files
 
 **Blueprints:**
-- `BP_ThirdPersonCharacter` - All damage system logic
+- `BP_ThirdPersonCharacter` - All damage/flinch system logic
 - `ABP_Unarmed` - Death animation state
-- `BP_EnemyBase` - Calls ApplyDamageToActor on player
+- `BP_EnemyBase` - DeliverHitboxDamage, calls ApplyDamageToActor
 
 **Interfaces:**
-- `BPI_Damageable` - Damage application contract
+- `BPI_Damageable` - Damage + FlinchLevel application contract
+
+**Montages:**
+- `AM_BlockFlinch` - Block impact animation
+- `AM_Flinch_Light` - Light hit reaction
 
 **Data Tables:**
-- (None currently - future: damage type tables)
+- `DT_GothicKnightAttacks` - Includes FlinchLevel per attack
 
 ---
 
@@ -736,9 +969,13 @@ Event BeginPlay:
 
 **BP_ThirdPersonCharacter:**
 - `CalculateDamageReduction(IncomingDamage)` → Returns FinalDamage
-- `ApplyDamageToActor(Damage)` → Interface implementation
+- `CalculateFlinchReduction(IncomingFlinchLevel)` → Returns FinalFlinchLevel
+- `ApplyDamageToActor(Damage, FlinchLevel)` → Interface implementation
 - `HandlePlayerDeath()` → Death sequence
-- `HandlePlayerHit()` → Hit feedback (placeholder)
+- `HandlePlayerHit(FinalDamage, FinalFlinchLevel)` → Hit feedback
+
+**BP_EnemyBase:**
+- `DeliverHitboxDamage(OtherActor, HitComponent)` → Mesh check + damage call
 
 **ABP_Unarmed:**
 - Event Blueprint Update Animation → Copies bIsDead from character
@@ -754,6 +991,9 @@ Event BeginPlay:
 - `bIsInvulnerable` (Boolean) - I-frame state
 - `bIsBlocking` (Boolean) - Block state (from BlockSystem)
 
+**BP_EnemyBase:**
+- `AlreadyHitActors` (Array of Actor References) - Prevents multi-hit per swing
+
 **ABP_Unarmed:**
 - `bIsDead` (Boolean) - Triggers death animation
 
@@ -762,8 +1002,10 @@ Event BeginPlay:
 ## Architectural Principles Demonstrated
 
 **Single Responsibility:**
-- CalculateDamageReduction = mitigation only
-- ApplyDamageToActor = health modification only
+- CalculateDamageReduction = damage mitigation only
+- CalculateFlinchReduction = flinch mitigation only
+- ApplyDamageToActor = health modification + routing
+- HandlePlayerHit = feedback only
 - HandlePlayerDeath = death sequence only
 
 **Encapsulation:**
@@ -774,17 +1016,17 @@ Event BeginPlay:
 **Open/Closed Principle:**
 - Easy to add mitigation sources (armor, buffs)
 - No modification to core damage flow
-- Extends via CalculateDamageReduction
+- Extends via Calculate functions
 
 **Separation of Concerns:**
-- Damage calculation ≠ Damage application
-- Damage application ≠ Death sequence
+- Damage calculation ≠ Flinch calculation
+- Damage application ≠ Death sequence ≠ Hit feedback
 - Clear functional boundaries
 
-**Data-Driven (Future):**
-- Ready for damage type tables
-- Ready for resistance tables
-- Ready for armor stat systems
+**Data-Driven:**
+- FlinchLevel in attack data table
+- Per-attack tuning without code changes
+- Ready for expansion
 
 ---
 
@@ -797,17 +1039,29 @@ Event BeginPlay:
 - Variables Added: 4 (MaxHealth, CurrentHealth, bIsDead, bIsInvulnerable)
 - AnimBP States: 1 (Death state in ABP_Unarmed)
 - Integration Points: 2 (Block system, I-frames system)
-- Lines of Blueprint: ~200-300 nodes
-- Bugs Fixed: 1 (input disable target pin)
+
+**Session 27.11.2025:**
+- Duration: ~3 hours
+- Major Systems: Flinch system, mesh-based hit detection, hit feedback
+- Functions Created: 2 (CalculateFlinchReduction, TriggerFlinch)
+- Functions Updated: 2 (ApplyDamageToActor, HandlePlayerHit)
+- Interface Updated: BPI_Damageable (added FlinchLevel parameter)
+- Data Structure Updated: S_BossAttackData (added FlinchLevel)
+- Mesh collision configured for accurate hit detection
+- Hit sounds implemented (blocked vs unblocked)
+- Flinch animations implemented (AM_BlockFlinch, AM_Flinch_Light)
 
 **Validation:**
 - ✅ Player takes damage from boss
-- ✅ Block reduces damage (70%)
-- ✅ Dodge i-frames negate damage (100%)
+- ✅ Block reduces damage (70%) and flinch (-1 level)
+- ✅ Dodge i-frames negate damage and flinch (100%)
 - ✅ Death at 0 HP works
 - ✅ Death animation plays
 - ✅ Input disabled on death
 - ✅ Boss stops attacking dead player
+- ✅ Mesh-based hit detection working
+- ✅ Hit sounds play (different for blocked/unblocked)
+- ✅ Flinch animations play
 
 ---
 
@@ -816,18 +1070,19 @@ Event BeginPlay:
 **This system embodies:**
 
 ✅ **Player Agency** - Mitigation is player choice (block vs dodge vs take hit)  
-✅ **Clear Feedback** - Prints show exactly what happened  
-✅ **Expandable Foundation** - Easy to add armor, buffs, perfect blocks  
+✅ **Clear Feedback** - Sounds and animations show exactly what happened  
+✅ **Expandable Foundation** - Easy to add armor, buffs, perfect blocks, more flinch levels  
 ✅ **Clean Architecture** - Separation of concerns, single responsibility  
-✅ **Defensive Options** - Multiple viable strategies (not just "dodge everything")
+✅ **Defensive Options** - Multiple viable strategies (not just "dodge everything")  
+✅ **Fair Hit Detection** - Mesh-based = visually accurate
 
 **Inspired by:**
 - **Dark Souls** - Health as resource, death as consequence
-- **Monster Hunter** - Block vs dodge as meaningful choice
+- **Monster Hunter** - Block vs dodge as meaningful choice, flinch levels
 - **God of War 2018** - Intimate combat with stakes, death matters
 
 ---
 
-*Last Updated: 21.11.2025*  
-*Status: Complete and tested*  
-*Next: Player flinch animation → Hit feedback VFX/SFX → Health UI*
+*Last Updated: 27.11.2025*  
+*Status: Complete with flinch system and mesh-based hit detection*  
+*Next: Medium/Heavy flinch → Directional flinch → Health UI*

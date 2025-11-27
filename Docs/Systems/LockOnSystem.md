@@ -1,7 +1,7 @@
 # Lock-On System Documentation
 
-**Status:** ✅ Complete (Session 21.11 fixes applied)  
-**Sessions:** 8-9.11.2025 (initial), 21.11.2025 (chest targeting fix)  
+**Status:** ✅ Complete + Camera Smoothing  
+**Sessions:** 8-9.11.2025 (initial), 21.11.2025 (chest targeting), 26.11.2025 (camera interpolation)  
 **Purpose:** God of War 2018-style target lock for intimate boss combat
 
 ---
@@ -11,10 +11,11 @@
 The Lock-On System provides a camera-lock mechanism that keeps the player character facing a targeted enemy, enabling tactical strafing movement and directional dodges. The system toggles between free exploration camera and locked combat camera.
 
 **Design Philosophy:**
-- **God of War 2018 inspiration** - Over-shoulder, intimate camera
+- **God of War 2018 inspiration** - Over-shoulder, intimate camera with weight
 - **Tactical positioning** - Character always faces target, strafing movement
 - **Directional dodges enabled** - Left/right dodges make spatial sense
 - **Close combat focus** - For 1v1 boss encounters, not crowd combat
+- **Heavy camera feel** - Interpolated tracking, not instant snapping
 
 ---
 
@@ -23,7 +24,7 @@ The Lock-On System provides a camera-lock mechanism that keeps the player charac
 **Input:** Tab key (IA_LockOn action)
 
 **Behavior:**
-- **Unlocked → Lock:** Find nearest enemy, lock onto chest height target
+- **Unlocked → Lock:** Find nearest enemy, lock onto chest height target, snap SmoothedLockOnLocation
 - **Locked → Unlock:** Release lock, return to free camera
 
 **Movement Changes:**
@@ -32,17 +33,33 @@ The Lock-On System provides a camera-lock mechanism that keeps the player charac
 
 **Camera Changes:**
 - **Unlocked:** Player controls camera freely
-- **Locked:** Camera automatically aims at target's chest (LockCamera macro)
+- **Locked:** Camera smoothly tracks target's chest (interpolated LockCamera macro)
 
 ---
 
 ## Variables (BP_ThirdPersonCharacter)
+
+### Core Lock-On Variables
 
 | Variable | Type | Default | Category | Purpose |
 |----------|------|---------|----------|---------|
 | `bIsLockedOn` | Boolean | False | Camera | Currently locked to target? |
 | `LockedTarget` | Scene Component Reference | None | Camera | Reference to enemy's LockOnTarget component |
 | `LockOnRange` | Float | 500 | Camera | Max distance to lock onto enemy |
+
+### Camera Smoothing Variables (Session 26.11.2025)
+
+| Variable | Type | Default | Category | Purpose |
+|----------|------|---------|----------|---------|
+| `SmoothedLockOnLocation` | Vector | 0,0,0 | Camera | Interpolated target position |
+| `LockOnInterpSpeedHorizontal` | Float | 8.0 | Camera | XY tracking speed (lower = heavier) |
+| `LockOnInterpSpeedVertical` | Float | 3.0 | Camera | Z tracking speed (more stable) |
+
+**Tuning Guide:**
+- **8.0 / 3.0** - Default, responsive but weighted
+- **5.0 / 2.0** - Heavier, more cinematic
+- **3.0 / 1.5** - Very heavy God of War feel
+- **12.0 / 5.0** - Snappier, more responsive
 
 **Type Change (Session 21.11):**
 - **Old:** `LockedTarget` was Actor Reference (targeted root, bad angles)
@@ -57,7 +74,7 @@ The Lock-On System provides a camera-lock mechanism that keeps the player charac
 
 ## Enemy Setup (BP_EnemyBase)
 
-### LockOnTarget Component (Session 21.11)
+### LockOnTarget Component (Updated 26.11.2025)
 
 **Type:** Scene Component  
 **Location:** BP_EnemyBase → Components  
@@ -68,24 +85,43 @@ The Lock-On System provides a camera-lock mechanism that keeps the player charac
 BP_EnemyBase
 ├─ Capsule Component (root)
 ├─ Mesh
-│   └─ LockOnTarget (Scene Component) ← Parented to Mesh
+│   └─ LockOnTarget (Scene Component) ← Attached to socket via Construction Script
 ```
 
-**Transform (relative to Mesh):**
-- **X:** 0 (centered front-back)
-- **Y:** 0 (centered left-right)
-- **Z:** 80 (chest height for humanoid - tune per boss)
+### Socket-Based Attachment (Session 26.11.2025)
 
-**Why parent to Mesh:**
-- Moves with boss animations
-- Rotates with boss facing
-- Scales with boss size
+**Variable in BP_EnemyBase:**
+```
+LockOnTargetSocket: Name (Instance Editable)
+Default: "" (set per boss)
+```
+
+**Construction Script:**
+```
+Branch: LockOnTargetSocket != None AND LockOnTargetSocket != ""?
+└─ True → Attach Component To Component
+          └─ Target: LockOnTarget
+          └─ Parent: Mesh
+          └─ Socket Name: LockOnTargetSocket
+          └─ Location Rule: Snap to Target
+          └─ Rotation Rule: Snap to Target
+          └─ Scale Rule: Keep World
+```
+
+**Per-Boss Configuration:**
+- BP_Boss_GothicKnight: LockOnTargetSocket = "spine_02"
+- Future bosses: Set appropriate chest/torso bone
+
+**Why socket attachment:**
+- LockOnTarget follows boss animations (breathing, attacks, etc.)
+- More natural camera tracking than static offset
+- Camera moves with boss body, not just position
 
 ---
 
 ## Input Handling (IA_LockOn)
 
-### Toggle Logic
+### Toggle Logic (Updated 26.11.2025)
 
 **IA_LockOn Started event:**
 
@@ -112,6 +148,7 @@ IA_LockOn Started:
         │   ├─ Set LockedTarget = LockOnTarget component
         │   ├─ Set bIsLockedOn = True
         │   ├─ Set Orient Rotation to Movement = False
+        │   ├─ Get World Location (LockedTarget) → Set SmoothedLockOnLocation  ← NEW
         │   └─ Print: "Locked onto {Actor name}"
         │
         └─ False → LOCK FAILED
@@ -122,6 +159,7 @@ IA_LockOn Started:
 - Tab toggles between states (not hold)
 - Lock requires valid enemy in range
 - Get component from actor (not actor itself) - Session 21.11 fix
+- **SmoothedLockOnLocation initialized to actual target position** - Session 26.11 fix (prevents camera flinch on first lock)
 - Orient Rotation to Movement controls character facing
 
 ---
@@ -154,45 +192,76 @@ FindNearestEnemy:
 
 ## Camera System (LockCamera Macro)
 
-### LockCamera Macro
+### LockCamera Macro (Updated 26.11.2025)
 
-**When:** Called in Event Tick (or camera update event)  
+**When:** Called in Event Tick  
+**Input:** DeltaTime (Float) - required for interpolation  
 **Condition:** Only runs if `bIsLockedOn = True AND LockedTarget is valid`
 
-**Implementation:**
+**Implementation (with camera smoothing):**
 
 ```
-LockCamera:
+LockCamera (DeltaTime):
     ↓
     Branch: bIsLockedOn AND Is Valid (LockedTarget)?
-    └─ True → Calculate camera rotation
-               ↓
-               Get Player Camera Manager
-               → Get Camera Location (start point)
-               ↓
-               Get World Location (LockedTarget component)
-               → Add offset [50, 50, 120]
-               ↓
-               Find Look at Rotation
-               ├─ Start: Camera Location
-               └─ Target: Enemy chest + offset
-               ↓
-               Set Control Rotation
-               ├─ Target: Player Controller
-               └─ New Rotation: Calculated rotation
+    │
+    └─ True →
+        ↓
+        ═══ GET ACTUAL TARGET POSITION ═══
+        Get World Location (LockedTarget) → ActualTargetLocation
+        ↓
+        Break Vector (ActualTargetLocation) → ActualX, ActualY, ActualZ
+        Break Vector (SmoothedLockOnLocation) → SmoothedX, SmoothedY, SmoothedZ
+        ↓
+        ═══ INTERPOLATE HORIZONTAL (XY) ═══
+        FInterp To (Current: SmoothedX, Target: ActualX, DeltaTime, InterpSpeed: LockOnInterpSpeedHorizontal) → NewX
+        FInterp To (Current: SmoothedY, Target: ActualY, DeltaTime, InterpSpeed: LockOnInterpSpeedHorizontal) → NewY
+        ↓
+        ═══ INTERPOLATE VERTICAL (Z) - SLOWER ═══
+        FInterp To (Current: SmoothedZ, Target: ActualZ, DeltaTime, InterpSpeed: LockOnInterpSpeedVertical) → NewZ
+        ↓
+        ═══ RECOMBINE AND STORE ═══
+        Make Vector (NewX, NewY, NewZ) → Set SmoothedLockOnLocation
+        ↓
+        ═══ ADD OFFSET ═══
+        SmoothedLockOnLocation + [50, 50, 120] → FinalTarget
+        ↓
+        ═══ CALCULATE AND APPLY ROTATION ═══
+        Get Player Camera Manager → Get Camera Location
+        Find Look At Rotation (Start: CameraLocation, Target: FinalTarget)
+        Set Control Rotation (Target: Player Controller, NewRotation: result)
 ```
 
-**Mysterious Offset [50, 50, 120]:**
+**Why separate horizontal and vertical interpolation:**
+- Horizontal (XY): Faster tracking - keeps target centered as they strafe
+- Vertical (Z): Slower tracking - stabilizes camera during jumps, attacks, crouches
+- Creates "heavy" camera feel without losing target
+
+**Offset [50, 50, 120]:**
 - **X: 50** - Slightly ahead of target (anticipation)
 - **Y: 50** - Slightly right of target (framing)
 - **Z: 120** - Above chest height (upward bias)
 
-**Why offset exists:**
-- Tuned by feel during development
-- Exact framing preference
-- May vary per boss (future: per-boss offset)
+**Note:** Offset values tuned by feel. May vary per boss in future.
 
-**Note:** "Don't ask why these values exist, I don't remember why" - Ilia, Session 21.11
+---
+
+### Old Implementation (Pre-26.11.2025)
+
+For reference, the original direct-snap approach:
+
+```
+LockCamera (OLD - no interpolation):
+    ↓
+    Branch: bIsLockedOn AND Is Valid (LockedTarget)?
+    └─ True → 
+        Get World Location (LockedTarget)
+        → Add offset [50, 50, 120]
+        → Find Look at Rotation (Camera, Target)
+        → Set Control Rotation
+```
+
+**Problem:** Camera snapped instantly to every micro-movement. Felt jittery, not cinematic.
 
 ---
 
@@ -329,8 +398,30 @@ Camera aims at chest (good framing)
 
 **Benefit:**
 - Per-enemy control (adjust Z offset per boss)
-- Animated targets (component moves with animations)
+- Animated targets (component moves with animations via socket)
 - Multiple lock points (future: head, weak spot, etc.)
+
+---
+
+### FInterp To Node
+
+**Purpose:** Smooth interpolation toward target value
+
+**Parameters:**
+- **Current:** Starting value (SmoothedX/Y/Z)
+- **Target:** Destination value (ActualX/Y/Z)
+- **Delta Time:** Frame time (for frame-rate independence)
+- **Interp Speed:** How fast to approach target (higher = faster)
+
+**Behavior:**
+- Approaches target asymptotically
+- Never overshoots
+- Frame-rate independent when using DeltaTime
+
+**Formula (approximately):**
+```
+NewValue = Current + (Target - Current) * Clamp(DeltaTime * InterpSpeed, 0, 1)
+```
 
 ---
 
@@ -341,11 +432,17 @@ Camera aims at chest (good framing)
 - ✅ ~~Camera locks to feet (strange angles)~~ - Added LockOnTarget component at chest height
 - ✅ ~~LockedTarget type wrong~~ - Changed to Scene Component Reference
 
-### Current (Deferred to Real Boss)
+### Fixed (Session 26.11)
+
+- ✅ ~~Camera snaps to every micro-movement~~ - Added interpolation (SmoothedLockOnLocation)
+- ✅ ~~LockOnTarget doesn't follow animations~~ - Socket-based attachment
+- ✅ ~~Camera flinches on first lock~~ - Initialize SmoothedLockOnLocation on lock
+
+### Current (Deferred)
 
 **Camera pitch clamp:**
 - Camera can rotate to extreme angles (straight up/down)
-- Deferred: Needs real boss animations to tune properly
+- Deferred: Needs tuning with real boss fights
 - Future: Clamp pitch to -30° / +30° range
 
 **Camera collision:**
@@ -382,24 +479,24 @@ Camera aims at chest (good framing)
    - Break lock if > 3000 units
    - Smooth transition to free camera
 
+4. **Further Camera Weight Tuning** (ongoing)
+   - Lower interp speeds (3.0 / 1.5) for heavier feel
+   - Test with different boss attack patterns
+   - May need per-boss tuning
+
 ---
 
 ### Medium Priority
 
-4. **Multiple Target Switching** (1 hour)
+5. **Multiple Target Switching** (1 hour)
    - Right stick flicks switch between nearby enemies
    - Useful for multi-boss arenas
    - Cycle through valid targets
 
-5. **Lock-On Sticky Aim** (30 min)
+6. **Lock-On Sticky Aim** (30 min)
    - Small magnetism toward target
    - Helps tracking fast-moving bosses
    - Tune strength by feel
-
-6. **Camera Smoothing** (1 hour)
-   - Interpolate rotation instead of snapping
-   - Smooth lock-on engagement
-   - Smooth target switches
 
 ---
 
@@ -414,6 +511,7 @@ Camera aims at chest (good framing)
    - Different offsets per boss
    - Different FOV per boss
    - Different pitch clamps for flying vs ground bosses
+   - Different interp speeds per boss
 
 9. **Lock-On Audio** (30 min)
    - Sound on lock engage
@@ -434,6 +532,13 @@ Camera aims at chest (good framing)
 - ✅ Lock persists during attacks
 - ✅ Lock persists during blocking
 - ✅ Lock persists during dodging
+
+**Camera Smoothing (Session 26.11):**
+- ✅ Camera doesn't snap instantly
+- ✅ Horizontal tracking feels responsive
+- ✅ Vertical tracking is more stable
+- ✅ No camera flinch on first lock
+- ✅ Camera follows boss animations smoothly
 
 **Movement Integration:**
 - ✅ Unlocked: Character rotates with movement
@@ -474,19 +579,32 @@ Camera aims at chest (good framing)
 
 ### Why Scene Component vs Socket?
 
-**Alternative considered:** Socket on Mesh bone
+**Original approach (Session 21.11):** Scene Component with static offset
 
-**Considered but not needed:**
-- Scene Component simpler for static offset
-- Socket better for animated target (head tracking, weak spot pulsing)
-- Current: Static chest point sufficient
-- Future: Socket-based if needed for part-breaks
+**Updated approach (Session 26.11):** Scene Component attached to socket
 
-**Chosen approach (Scene Component):**
-- ✅ Simple setup (no bone selection)
-- ✅ Easy to position (XYZ offset)
-- ✅ Moves with mesh (parented)
-- ✅ Sufficient for prototype
+**Why socket attachment:**
+- ✅ Follows boss animations naturally
+- ✅ Camera tracks breathing, attacks, movement
+- ✅ More organic feel than static point
+- ✅ Combined with interpolation = smooth, natural tracking
+
+---
+
+### Why Separate Horizontal/Vertical Interp Speeds?
+
+**Alternative considered:** Single interp speed for all axes
+
+**Rejected because:**
+- ❌ Vertical movement (jumps, crouches) causes camera to bob
+- ❌ Either too sluggish horizontally or too reactive vertically
+- ❌ Doesn't match God of War feel
+
+**Chosen approach (separate speeds):**
+- ✅ Horizontal: Faster (8.0) - keeps target centered during strafing
+- ✅ Vertical: Slower (3.0) - stabilizes during attacks, jumps
+- ✅ Creates "heavy" cinematic feel
+- ✅ Player can track side-to-side movement while vertical stays calm
 
 ---
 
@@ -501,12 +619,14 @@ Camera aims at chest (good framing)
 - Softer lock (camera aims but player has some control)
 - Fluid combat flow
 - Set and forget
+- **Weighted camera movement**
 
 **Chosen approach (God of War):**
 - ✅ Matches intimate, close camera
 - ✅ Matches deliberate, tactical combat
 - ✅ Matches 1v1 boss focus (not crowd combat)
 - ✅ Less disorienting for new players
+- ✅ Camera interpolation creates cinematic weight
 
 ---
 
@@ -518,7 +638,7 @@ Camera aims at chest (good framing)
 - Camera System (lock vs free)
 
 **Downstream (affects lock-on):**
-- Enemy System (provides lock targets)
+- Enemy System (provides lock targets via LockOnTarget component)
 - Input System (Tab key, movement input relative to camera)
 
 **Parallel (independent):**
@@ -533,13 +653,13 @@ Camera aims at chest (good framing)
 ### Key Files
 
 **Blueprints:**
-- `BP_ThirdPersonCharacter` - Lock-on logic, LockCamera macro
-- `BP_EnemyBase` - LockOnTarget component
+- `BP_ThirdPersonCharacter` - Lock-on logic, LockCamera macro, smoothing variables
+- `BP_EnemyBase` - LockOnTarget component, LockOnTargetSocket variable
 - `ABP_Unarmed` - Conditional animation logic based on bIsLockedOn
 
 **Macros:**
 - `FindNearestEnemy` - Enemy detection
-- `LockCamera` - Camera rotation calculation
+- `LockCamera` - Interpolated camera rotation (requires DeltaTime input)
 
 ---
 
@@ -548,9 +668,13 @@ Camera aims at chest (good framing)
 **BP_ThirdPersonCharacter:**
 - `bIsLockedOn` (Boolean) - Lock state
 - `LockedTarget` (Scene Component Reference) - Target component
+- `SmoothedLockOnLocation` (Vector) - Interpolated position
+- `LockOnInterpSpeedHorizontal` (Float) - XY tracking speed
+- `LockOnInterpSpeedVertical` (Float) - Z tracking speed
 
 **BP_EnemyBase:**
-- `LockOnTarget` (Scene Component) - Aim point at chest height
+- `LockOnTarget` (Scene Component) - Aim point
+- `LockOnTargetSocket` (Name) - Bone to attach to
 
 **CharacterMovement:**
 - `Orient Rotation to Movement` - Toggled by lock state
@@ -560,9 +684,9 @@ Camera aims at chest (good framing)
 ### Key Functions/Macros
 
 **BP_ThirdPersonCharacter:**
-- IA_LockOn Started event - Toggle logic
+- IA_LockOn Started event - Toggle logic + SmoothedLockOnLocation init
 - FindNearestEnemy macro - Enemy detection
-- LockCamera macro - Camera control (called in Tick)
+- LockCamera macro - Interpolated camera control (called in Tick with DeltaTime)
 
 ---
 
@@ -576,7 +700,7 @@ Camera aims at chest (good framing)
 **Component-Based:**
 - LockOnTarget = reusable component
 - Any enemy can have lock target
-- Position per-enemy via component offset
+- Position per-enemy via socket attachment
 
 **Toggle State Pattern:**
 - Boolean flag (bIsLockedOn)
@@ -589,6 +713,11 @@ Camera aims at chest (good framing)
 - Lock-on doesn't know about dodge/block
 - Clean separation of concerns
 
+**Frame-Rate Independence:**
+- FInterp To uses DeltaTime
+- Camera smoothing works consistently at any framerate
+- Important for 30fps vs 60fps vs 120fps feel
+
 ---
 
 ## Design Philosophy
@@ -599,10 +728,11 @@ Camera aims at chest (good framing)
 ✅ **Tactical Movement** - Strafing enables positioning strategy  
 ✅ **Player Agency** - Toggle when needed, not forced  
 ✅ **Clear Feedback** - Character body language shows lock state  
-✅ **System Synergy** - Enables directional dodges and guards
+✅ **System Synergy** - Enables directional dodges and guards  
+✅ **Cinematic Weight** - Interpolated camera feels heavy and deliberate
 
 **Inspired by:**
-- **God of War 2018** - Soft lock, fluid combat, over-shoulder intimacy
+- **God of War 2018** - Soft lock, fluid combat, over-shoulder intimacy, weighted camera
 - **Monster Hunter** - Target lock for deliberate boss fights
 - **Resident Evil 2 Remake** - Close camera, claustrophobic feel
 
@@ -625,13 +755,25 @@ Camera aims at chest (good framing)
 - Fix: Updated LockCamera to use Get World Location on component
 - Result: Camera now aims at chest height (good framing)
 
-**Deferred (Smart Decision):**
-- Camera pitch clamp (needs real boss to tune)
-- Camera smoothing (polish phase)
+**Session 26.11.2025 (Camera Interpolation):**
+- Duration: ~45 minutes
+- Problem: Camera snapped to every micro-movement, felt jittery
+- Fix: Added SmoothedLockOnLocation variable
+- Fix: Added LockOnInterpSpeedHorizontal (8.0) and LockOnInterpSpeedVertical (3.0)
+- Fix: LockCamera now uses FInterp To for smooth tracking
+- Fix: Separate horizontal/vertical speeds for stability
+- Fix: Initialize SmoothedLockOnLocation on lock (prevents first-frame flinch)
+- Fix: LockOnTarget attached to socket (follows animations)
+- Result: Heavy, cinematic camera feel (God of War 2018 style)
+- Note: Further tuning deferred to polish phase (lower speeds = heavier)
+
+**Deferred:**
+- Camera pitch clamp (needs tuning with boss fights)
 - Lock-on UI (visual polish)
+- Auto-unlock on distance
 
 ---
 
-*Last Updated: 21.11.2025*  
-*Status: Complete with chest targeting fix*  
-*Next: Camera pitch clamp (when real boss added)*
+*Last Updated: 26.11.2025*  
+*Status: Complete with camera smoothing*  
+*Next: Further weight tuning during polish phase*
