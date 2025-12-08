@@ -38,6 +38,38 @@ Quick reference for all implemented game systems.
 
 ---
 
+## Debug Visualization System - Boss AI Geometry
+
+### Overview
+
+The debug visualization system provides real-time visual feedback of the boss AI's spatial awareness and geometry-based decision making. It renders geometric zones, attack ranges, and player position data to aid in development, testing, and tuning.
+
+**Purpose:**
+- Visualize the 12 geometric sectors (3 distance bands × 4 directional cones)
+- Show which sector the player currently occupies
+- Display optimal angle precision zones
+- Debug attack selection geometry
+- Validate hitbox traces
+- Tune distance bands and angle requirements
+
+---
+
+### Enabling/Disabling Debug Mode
+
+**Master Toggle:**
+- **Variable:** `bShowDebugGeometry` (Boolean) in BP_EnemyBase
+- **Default:** False (disabled)
+- **Set at runtime:** Can be toggled via Blueprint logic or debug console
+
+**What Gets Drawn When Enabled:**
+1. Distance band circles (3 rings)
+2. Cone boundary lines (4 radial lines)
+3. Dynamic optimal angle wedge (changes with player position)
+4. Weapon trace visualization (red/green spheres during attacks)
+5. Socket location spheres (during attacks)
+
+---
+
 ## Perfect Timing System
 
 **Status:** ✅ Core Complete  
