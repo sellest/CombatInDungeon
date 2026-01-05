@@ -111,11 +111,15 @@ This document defines the preferred communication style and approach when assist
 ### Core Vision
 Monster Hunter-style boss rush game with "cornered rat" player fantasy — visceral survival combat, not heroic power fantasy. Close over-the-shoulder camera, commitment-based mechanics, perfect timing as core pillar.
 
-### Current State (December 2025)
-- **Player:** Combat complete (attacks, dodge, block, i-frames)
+### Current State (January 2026)
+- **Player Locomotion:** Complete - Armed/Unarmed/Block/Turns, physics-based acceleration
+- **Sheathe System:** Complete - Weapon attachment, intent flags
+- **Roll System:** Complete - Directional rolls, rotate-then-roll, I-frames, cancel windows
+- **Block System:** Complete - Full locomotion integration, bBlockEstablished routing
+- **Combat:** Attacks, combos, perfect timing working
 - **Boss AI V2:** Geometry-aware, reactive, threatening
 - **Gothic Knight:** 9 of 18 attacks implemented
-- **Feel:** Boss is "T-1000 killing machine" — needs exhaustion system for rhythm
+- **Next:** Flinch system, then stamina
 
 ### Architecture Pattern
 ```
@@ -191,9 +195,19 @@ Event Tick
 
 ---
 
-## Key Learnings (Updated December 2025)
+## Key Learnings (Updated January 2026)
 
-### Technical
+### Technical - Locomotion & Animation
+- ABP state machines get complex fast - JogSequence has 20+ states
+- Intent flag pattern prevents state desync (bWantsTurn, bWantsRoll, bWantsSheathe)
+- Guard-heavy functions are robust (CalculateTurnAngle has 7 guards - each prevents a bug)
+- BlendSpace Loop=True critical for spam prevention
+- Angle normalization (-180 to 180) has edge cases at boundaries
+- Sync markers for foot alignment, but terminal states (stops) need no sync group
+- ABP cannot set variables - all state tracking in character BP
+- Root motion from state machine fights acceleration system - disable per-animation
+
+### Technical - Boss AI
 - Geometry-based AI > scripted patterns
 - Movement direction must update every frame for tracking
 - Engine settings (Orient Rotation) can override manual control
@@ -201,15 +215,17 @@ Event Tick
 
 ### Design
 - "Working systems ≠ good game" — feel matters
-- Study reference games actively (Doshaguma research)
+- Study reference games actively (Monster Hunter, Mortal Shell)
 - Attacks should hide rotation, not turn-then-attack
 - Combat needs rhythm — restless boss is exhausting, not fun
+- Commitment-based movement takes time to build but feels right
 
 ### Process
 - Test in isolation before integration (learned from V1 failure)
 - Document when complete, not "later"
 - Reset and restate when confused
-- Simple random before weighted random
+- Playtest reveals which issues actually matter
+- 3 weeks on locomotion is normal for production quality
 
 ---
 
@@ -217,14 +233,24 @@ Event Tick
 
 | Priority | Task | Status |
 |----------|------|--------|
-| 1 | Boss exhaustion system | Not started |
-| 2 | Player block animation fix | Not started |
-| 3 | Simple arena | Not started |
-| 4 | Attack tuning | Ongoing |
+| 1 | Locomotion system | ✅ Complete |
+| 2 | Roll system | ✅ Complete |
+| 3 | Flinch system (player hit reactions) | Next |
+| 4 | Stamina system | After flinch |
+| 5 | Boss exhaustion system | Needed for rhythm |
+| 6 | Simple arena | Not started |
+| 7 | Attack tuning | Ongoing |
+
+**Character Systems Complete:**
+- ✅ Armed/Unarmed locomotion with turns
+- ✅ Sheathe/Unsheathe with weapon attachment
+- ✅ Block with full locomotion
+- ✅ Roll with I-frames and cancel windows
+- ✅ Combat (attacks, combos, perfect timing)
 
 **Not needed for playtest:** Additional bosses, part-break, UI polish, sound polish, multiple arenas.
 
 ---
 
-*Last Updated: December 11, 2025*
-*Session: Claude-13*
+*Last Updated: January 5, 2026*
+*Session: Claude-15 (Locomotion, Turns, Block, Roll complete)*

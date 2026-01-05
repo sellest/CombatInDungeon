@@ -2,6 +2,56 @@
 
 Quick reference for all implemented game systems.
 
+**Last Updated:** January 2026
+
+---
+
+## Locomotion System
+
+**Status:** ✅ Complete (Armed/Unarmed/Block/Turns)  
+**Sessions:** December 2025 - January 2026  
+**Blueprint:** ABP_Unarmed, BP_ThirdPersonCharacter
+
+### Core Features
+
+- Physics-based acceleration (not root motion)
+- Armed and Unarmed states with full locomotion
+- Sheathe/Unsheathe system with weapon attachment
+- Block locomotion (walk only, no run)
+- Idle turns with angle snapping
+- Input commitment (locked during Start/Stop animations)
+- Sync marker foot alignment
+
+### Key Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `TargetSpeed` | Intent (0, 250, 600) |
+| `CurrentSpeed` | Actual speed, interpolates toward TargetSpeed |
+| `bLockMovementInput` | Prevents input during committed animations |
+| `bIsArmed` | Armed/Unarmed state |
+| `bWantsTurn` | Turn intent flag |
+| `bIsBlocking` | Currently blocking |
+| `bBlockEstablished` | Block stance achieved (for routing) |
+
+### State Machine (JogSequence)
+
+```
+Entry → Armed? (Conduit)
+  ├─ Unarmed: Idle ↔ Turn ↔ Walk/Run states
+  ├─ Armed: Armed_Idle ↔ Armed_Turn ↔ Armed_Walk/Run states
+  ├─ Block: Block_Idle ↔ Guard_Walk states
+  └─ Sheathe transitions between Armed/Unarmed
+```
+
+### Animation Notify States
+
+- **ANS_LockMovementInput** - Commits to Start/Stop animations
+- **ANS_SlowRotation** - Reduces rotation speed during transitions
+- **AN_ClearTurnIntent** - Clears stale turn flags
+
+**See:** LocomotionSystem.md for full documentation
+
 ---
 
 ## Combat System
@@ -108,123 +158,119 @@ The debug visualization system provides real-time visual feedback of the boss AI
 
 ---
 
-## Dodge System
+## Roll System (Evasion)
 
-## Dodge System
+**Status:** ✅ Complete (Armed/Unarmed)  
+**Sessions:** January 2026  
+**Blueprint:** ABP_Unarmed (Top Level), BP_ThirdPersonCharacter
 
-**Status:** ✅ Complete with I-Frames  
-**Sessions:** 9.11 (initial), 21.11 (i-frames)
+### Core Features
 
-### Components
+- Top-level ABP state (interrupts most actions)
+- Directional rolls when locked on (4 directions)
+- Rotate-then-roll when free camera
+- I-frames (frames 10-45 of 66)
+- Cancel window (frames 50+)
+- Can cancel attack recovery
 
-**Two modes: free camera and lock-on camera**
+### Key Variables
 
-**Unlocked camera:**
-- Always performs Forward animation
-- Character rotates to face movement direction
+| Variable | Purpose |
+|----------|---------|
+| `bWantsRoll` | Intent flag |
+| `bIsDodging` | Currently rolling |
+| `RollDirection` | BlendSpace input (-180 to 180) |
+| `bRotatingIntoRoll` | Pre-roll rotation in progress |
+| `TargetRollRotation` | Target yaw for rotation |
+| `bIdleExit` | Animation reached idle exit point |
 
-**Locked camera:**
-- Character always faces target
-- 4 animations: Forward/Backward/Left/Right
-- Direction: Based on WASD (LastMoveForward/Right)
+### Animation Timing (66 frames)
 
-**Input:** Spacebar
+| Frames | Phase |
+|--------|-------|
+| 0-10 | Windup (vulnerable) |
+| 10-45 | Active roll (I-frames) |
+| 45-50 | Early recovery (locked) |
+| 50-65 | Late recovery (cancel window) |
 
-### I-Frames System (Session 21.11)
+### Animation Notifies
 
-**ANS_IFrames** - AnimNotifyState for invulnerability
+- **ANS_IFrames (10-45)** - Invulnerability
+- **ANS_LockDefense (0-50)** - Prevents block/roll spam
+- **ANS_LockInput (0-50)** - Prevents attack during roll
+- **AN_DodgeComplete (49)** - Resets flags
+- **AN_RollIdleExit (65)** - Enables idle exit
 
-**Placement in dodge montages:**
-- Start: 0.1s (after initial step)
-- End: 0.5s (before recovery)
-- Duration: 0.4s (50% of dodge - God of War 2018 style)
+### Behavior
 
-**Effect:**
-- Sets `bIsInvulnerable = True`
-- CalculateDamageReduction returns 0 damage
-- Print: "Dodged! No damage received"
+**Locked On:**
+- Roll direction from input (Atan2)
+- Character stays facing target
+- 4-directional rolls
 
-**Design:** God of War style (generous, middle-placed) vs Monster Hunter style (tight, start-only)
+**Free Camera:**
+- Calculate input world direction
+- If angle > 15°: rotate first, then roll forward
+- Fast interpolation (35.0 speed)
 
-**Why 50% coverage:**
-- Balances accessibility with skill
-- Compensates for close camera (limited visibility)
-- Matches strafing aesthetic (not roll)
-- Rewards reads over reflexes
-
-### Variables
-
-- `bIsDodging` (Boolean)
-- `bIsInvulnerable` (Boolean) - I-frames active
-- `LastMoveForward` (Float)
-- `LastMoveRight` (Float)
-
-### Functions
-
-- `ExecuteDodge(Montage)` - Plays dodge animation
-- Direction determined by movement input at press time
-
-### Montages
-
-- AM_Dodge_Forward (with ANS_IFrames)
-- AM_Dodge_Backward (with ANS_IFrames)
-- AM_Dodge_Left (with ANS_IFrames)
-- AM_Dodge_Right (with ANS_IFrames)
-
-**See:** DodgeSystem.md for full documentation
+**See:** RollSystem.md for full documentation
 
 ---
 
 ## Block System
 
 **Status:** ✅ Complete with Locomotion  
-**Session:** 18-20.11.2025
+**Sessions:** November 2025, January 2026 (locomotion integration)
 
-### Components
+### Core Features
 
-**Input:** R2/RT (IA_Block) - Hold input
+- Hold input (R2/RT)
+- Armed only (must have weapon drawn)
+- Full locomotion while blocking (walk only, no run)
+- Block_Start → Block_Idle → Block_End sequence
+- 70% damage reduction
 
-**Movement while blocking:**
-- Max Walk Speed: 200 → 100 (50% slower)
-- Full 8-directional movement
-- Camera-aware animations (locked vs unlocked)
+### Key Variables
 
-**Defense (Session 21.11):**
-- Damage reduction: 70% (multiply by 0.3)
-- Integrated with player damage system
-- Print: "Blocked! {IncomingDamage} → {ReducedDamage}"
+| Variable | Purpose |
+|----------|---------|
+| `bIsBlocking` | Currently holding block |
+| `bBlockEstablished` | Block stance achieved |
+| `bCanBlock` | Can block (ANS_LockDefense control) |
 
-### Variables
+### State Machine Integration
 
-- `bIsBlocking` (Boolean) - Currently in blocking state
-- `bCanBlock` (Boolean) - Can block? (ANS_LockDefense control)
-- `bBlockPressed` (Boolean) - Hold-state tracking
+Block states live inside JogSequence:
+```
+Armed_Idle ↔ Block_Idle
+  │
+  ├─ Block_Start → Block_Idle (fresh block)
+  ├─ Block_Idle → Block_End → Armed_Idle (release)
+  │
+Guard_Walk states:
+  ├─ Guard_Walk_Start → Guard_Walk_Loop
+  ├─ Guard_Walk_Loop → Guard_Walk_Stop
+  └─ Guard_Walk_Stop → Block_Idle
+```
 
-### Animation System
+### bBlockEstablished Logic
 
-**ABP_Unarmed → BlockSequence (nested state machine):**
-- GuardBegin - Shield raise (~0.5s)
-- GuardIdle - Main locomotion (UE5_SSH_Guard_Jog_Forward_BlendSpace)
-- GuardEnd - Shield lower (~0.5s)
+**Purpose:** Routes correctly when returning from movement.
 
-**Blend Space Inputs:**
-- Degree: Direction (-180° to 180°)
-- Speed: GroundSpeed (0-800)
-- Camera-aware: Unlocked = force forward, Locked = use directional
+- **Set True:** End of Block_Start, or when pressing block while moving
+- **Set False:** When block released
 
-### Integration
+**Routing:**
+- `bIsBlocking AND bBlockEstablished` → Block_Idle (skip start)
+- `bIsBlocking AND NOT bBlockEstablished` → Block_Start
 
-**With Combat System:**
-- ExecuteBlock function clears CurrentAttackName, bCanCombo
-- ANS_LockDefense controls when player can block during attacks
-- Hold-state tracking enables blocking during attack animations
+### Defense Integration
 
-**With Damage System (Session 21.11):**
 - CalculateDamageReduction checks bIsBlocking
-- Applies 0.3 multiplier (70% reduction)
-- Boss delivers 10 damage → Player takes 3 damage
+- 70% reduction (multiplier 0.3)
+- Block reactions: Light hit, Block break
 
-**See:** BlockSystem.md for full documentation
+**See:** LocomotionSystem.md (Block Locomotion section)
 
 ---
 
@@ -539,8 +585,31 @@ See: [Session_20.11.2025_BossAI_FlinchSystem.md](Sessions/Session_20.11.2025_Bos
 
 ## Next Priorities
 
-1. **Additional Inputs** (RMB, holds, Y+B simultaneous)
-2. **Enemy AI** (basic chase/attack)
-3. **Material/Bounce System** (stone vs wood surfaces)
-4. **Damage System** (integrate perfect timing multiplier)
-5. **Boss Part-Break** (foundation for MH-style gameplay)
+1. **Flinch System** - Player hit reactions (Light, Heavy, Knockdown)
+2. **Stamina System** - Resource for rolls, attacks, blocking
+3. **Combat Polish** - Attack tuning, boss AI adjustments
+4. **Boss Exhaustion** - Combat rhythm system
+5. **Part-Break System** - Core pillar, not yet implemented
+
+---
+
+## January 2026 Playtest Checklist
+
+**Player Character:**
+- ✅ Locomotion (Armed/Unarmed/Block/Turns)
+- ✅ Sheathe/Unsheathe
+- ✅ Combat (Attacks, Combos)
+- ✅ Block with locomotion
+- ✅ Roll with I-frames
+- ⬜ Flinch reactions
+- ⬜ Stamina
+
+**Boss:**
+- ✅ AI State Machine
+- ✅ Attack system
+- ⬜ Exhaustion system
+- ⬜ Multiple attack patterns
+
+**Polish:**
+- ⬜ Minor transition twitches
+- ⬜ Sharp direction snap (lock-on strafe)
